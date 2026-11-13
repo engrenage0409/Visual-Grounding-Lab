@@ -6,6 +6,7 @@ from .geometry import cxcywh_to_xyxy
 from .spatial import attention_centers,center_size_to_valid_xyxy
 from .region import region_candidates
 from .anchor_free import anchor_free_candidates
+from .refinement import CoarseFineRefiner
 
 class CLIPGrounder(nn.Module):
     """Frozen CLIP patch/text representations + trainable box head.
@@ -17,7 +18,7 @@ class CLIPGrounder(nn.Module):
     """
     def __init__(self,model_name="openai/clip-vit-base-patch32",hidden=256,arch="baseline"):
         super().__init__()
-        if arch not in ("baseline","spatial","region","region_af"): raise ValueError("Unknown architecture")
+        if arch not in ("baseline","spatial","region","region_af","coarse_fine"): raise ValueError("Unknown architecture")
         self.arch=arch
         self.model_name=model_name
         self.processor=CLIPProcessor.from_pretrained(model_name)
@@ -45,15 +46,24 @@ class CLIPGrounder(nn.Module):
             self.patch_fusion=nn.Sequential(nn.Linear(hidden*2,hidden),nn.GELU(),
                                             nn.LayerNorm(hidden))
             self.score_head=nn.Linear(hidden,1)
-            if arch=="spatial":
+            if arch in ("spatial","coarse_fine"):
                 self.size_head=nn.Sequential(nn.Linear(hidden*2,hidden),nn.GELU(),
                                              nn.Linear(hidden,2))
+                if arch=="coarse_fine":
+                    self.refiner=CoarseFineRefiner(hidden)
             elif arch=="region":
                 self.region_offset_head=nn.Linear(hidden,2)
                 self.region_size_head=nn.Linear(hidden,2)
             else:
                 self.af_distance_head=nn.Linear(hidden,4)
                 self.af_quality_head=nn.Linear(hidden,1)
+    def freeze_coarse(self):
+        """V6: train only the refinement head while retaining the V4 prediction."""
+        if self.arch!="coarse_fine":
+            raise ValueError("freeze_coarse requires arch=coarse_fine")
+        for name,param in self.named_parameters():
+            param.requires_grad_(name.startswith("refiner."))
+
     def train(self,mode=True):
         super().train(mode)
         self.clip.eval()
@@ -112,4 +122,11 @@ class CLIPGrounder(nn.Module):
         size=torch.sigmoid(self.size_head(torch.cat([attended,query],dim=-1)))
         boxes=center_size_to_valid_xyxy(center,size)
         aux={"spatial_logits":logits,"spatial_probs":probs}
+        if self.arch=="coarse_fine":
+            # Stop gradients to coarse box; independently trainable refinement.
+            coarse_boxes=boxes
+            refined,delta=self.refiner(visual,query,coarse_boxes.detach(),self.grid)
+            aux={"coarse_boxes":coarse_boxes,"refine_delta":delta,
+                 "spatial_probs":probs}
+            boxes=refined
         return (boxes,aux) if return_aux else boxes
