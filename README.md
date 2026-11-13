@@ -1,3 +1,31 @@
+## V7.1: diagnose learning of coordinate tokens (experimental)
+
+V7 was able to reduce training token CE from ~5.0 to ~3.15 but measured 0% Hard Acc@0.5. Since EOS is always the fifth target token, a perfect EOS predictor can attain 20% token accuracy **without locating anything**. V7.1 adds more informative diagnostics and coordinate-vocabulary ablations while **preserving V7's existing checkpoint and V1–V6 heads**.
+
+**New measures:** train coordinate token accuracy (four coordinates only), train EOS accuracy (separately), *teacher-forced* validation box IoU (GT prior coordinate tokens supplied), actual **autoregressive** box IoU (prior predictions supplied), actual coordinate exact-match and normalized MAE, invalid box rate and EOS rate. Teacher-forced box metrics are diagnostics and **not real inference performance**. Note that GT coordinate tokens still provide an easier history and token argmax may be invalid. These metrics expose generation failure without confusing it with EOS memorization.
+
+**Resolution ablation:** `--coord-max 100`, `224` or `1000` changes discrete coordinate vocabulary size (103 / 227 / 1003 tokens including BOS/EOS); each run starts a fresh decoder. Coordinate quantization limits absolute error to approximately 0.5 / coord_max per scalar (before learning errors). Old V7 checkpoints default to resolution 1000 on load. Do **not** load weights between different vocab sizes.
+
+**Optional decoding constraint:** `--constrain-box` is a **decode-only** ablation: x1,y1 are restricted below the maximum, x2>x1 and y2>y1. This prevents invalid box geometry but cannot ensure correct target selection and must be compared against unconstrained decoding.
+
+```powershell
+git pull origin main
+python -m pytest -q
+
+# Test diagnostics on your original V7 (no retraining):
+python -m scripts.evaluate_generative --checkpoint checkpoints/v7_generative_b16.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+python -m scripts.evaluate_generative --checkpoint checkpoints/v7_generative_b16.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard --constrain-box
+
+# Quantization ablation: identical data/architecture/training, independent saved weights:
+python -m scripts.train_generative --coord-max 100 --train data/v4_joint/train.jsonl --val data/v4_mixed/val.jsonl --image-root data/v4_mixed --model openai/clip-vit-base-patch16 --epochs 10 --batch-size 4 --out checkpoints/v7_1_gen_q100.pt
+python -m scripts.train_generative --coord-max 224 --train data/v4_joint/train.jsonl --val data/v4_mixed/val.jsonl --image-root data/v4_mixed --model openai/clip-vit-base-patch16 --epochs 10 --batch-size 4 --out checkpoints/v7_1_gen_q224.pt
+
+python -m scripts.evaluate_generative --checkpoint checkpoints/v7_1_gen_q100.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+python -m scripts.evaluate_generative --checkpoint checkpoints/v7_1_gen_q224.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+```
+
+Interpretation: if teacher-forced mean IoU is much higher than autoregressive mean IoU, error propagation is important; if both are poor, the model has not learned reliable image/text-conditioned coordinate prediction. **CE improvement alone is not grounding evidence.** All evaluation numbers require execution in the user's environment; no improvements are claimed in advance.
+
 ## V7: learn WHERE generative grounding comes from
 
 **Goal:** Study how image-and-text inputs can be mapped to a *generated coordinate sequence*, as a small controlled analogue of the generative grounding capability in Qwen-VL. This is **not a Qwen-VL reproduction**, **does not load Qwen weights**, and does **not** claim to use the exact Qwen3-VL architecture or training recipe. Existing V1-V6 code and checkpoints remain untouched.
