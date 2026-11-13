@@ -134,6 +134,31 @@ python -m scripts.visualize --checkpoint checkpoints/v5_region_b16.pt --image da
 
 `visualize` draws the selected candidate in red, additional top-ranked candidate boxes in orange, and an optional score heatmap. Compare against `checkpoints/v4_b16.pt` on **identical** V4 Mixed/Hard sets. V5 has not yet been GPU-trained or verified to outperform V4.
 
+## V5.1: anchor-free region head and Oracle Top-K diagnostics
+
+This is a **new architecture** `--arch region_af`; the old `baseline`, `spatial` (V4), and `region` (V5) code paths remain available and compatible with their existing head checkpoints. Do not overwrite historical `.pt` files.
+
+`region_af` predicts a text-conditioned match logit, four L/T/R/B distances from each patch center, and an IoU-quality logit. In contrast to classical anchor-box detectors, no predefined box sizes or aspect ratios are used. GT-center sampling labels **multiple** interior points as positive, with a nearest-point fallback for tiny targets. The model trains all positive candidates with L1 + GIoU and uses balanced positive/negative BCE for matching plus soft IoU quality supervision. The inference score is `sigmoid(match) * sigmoid(quality)`, and inference selects one top-scored box. This is a single-scale FCOS-inspired research head, **not full YOLO or FCOS**. The `--spatial-weight` option controls the match/quality loss weight on `region_af`.
+
+Train on the **fixed V4** dataset to compare against the existing V4 and V5 checkpoints:
+
+```powershell
+git pull origin main
+python -m pytest -q
+python -m scripts.train --arch region_af --model openai/clip-vit-base-patch16 --loss giou --spatial-weight 1.0 --train data/v4_joint/train.jsonl --val data/v4_mixed/val.jsonl --image-root data/v4_mixed --epochs 10 --batch-size 4 --out checkpoints/v5_af_b16.pt
+python -m scripts.evaluate --checkpoint checkpoints/v5_af_b16.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+```
+
+Diagnose candidate generation and ranking **before/after** using the same V4 Hard validation set:
+
+```powershell
+python -m scripts.diagnose_regions --checkpoint checkpoints/v5_region_b16.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard --out results/v5_oracle.json
+python -m scripts.diagnose_regions --checkpoint checkpoints/v5_af_b16.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard --out results/v5_af_oracle.json
+python -m scripts.visualize --checkpoint checkpoints/v5_af_b16.pt --image data/v4_hard/val_0094.png --text "the yellow triangle" --output results/v5_af_0094.png --heatmap results/v5_af_0094_heatmap.png
+```
+
+`Oracle@K` calculates the best GT IoU among the model's top-K candidates **using ground truth at evaluation time**. It is a diagnostic upper bound, **not deployable inference performance**. Compare actual Top-1 to Oracle@5 and Oracle@All to separate ranking from candidate-regression failures. The code is not yet GPU-trained or validated on the user's machine; do not claim it improves V4 until measured.
+
 ## Phase 1: actual referring-expression data
 
 Obtain RefCOCO-style images and annotations legally, and split examples by the appropriate dataset protocol. Convert to per-line JSON records:
