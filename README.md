@@ -1,3 +1,36 @@
+## V7: learn WHERE generative grounding comes from
+
+**Goal:** Study how image-and-text inputs can be mapped to a *generated coordinate sequence*, as a small controlled analogue of the generative grounding capability in Qwen-VL. This is **not a Qwen-VL reproduction**, **does not load Qwen weights**, and does **not** claim to use the exact Qwen3-VL architecture or training recipe. Existing V1-V6 code and checkpoints remain untouched.
+
+### What trains, and what is generated?
+
+The same labeled image/text/GT JSONL used by V4-V6 is reused. A frozen CLIP ViT-B/16 extracts 196 visual patch tokens; frozen CLIP text encoder extracts a pooled text vector. Trainable projections form encoder memory; a small, trainable **causal Transformer Decoder** cross-attends to the memory and predicts 5 tokens:
+
+```text
+input:  image + "the yellow triangle"
+GT:     [x1,y1,x2,y2] in normalized image coordinates
+quant:  [round(1000*x1), round(1000*y1), round(1000*x2), round(1000*y2)]
+BOS:    <BOS> (ID 1001) ; EOS: <EOS> (ID 1002)
+training decoder input: [BOS, x1, y1, x2, y2]
+training next tokens:  [x1, y1, x2, y2, EOS]
+loss:   autoregressive cross-entropy (teacher forcing)
+inference: starts from BOS, greedily predicts 4 discrete coordinates then EOS
+```
+
+Coordinate values are represented by **1001 discrete tokens** (0..1000), not literal JSON numerals. It is a compact didactic coordinate vocabulary, not Qwen's official tokenizer/serialization. During inference, the 4 coordinate positions are restricted to coordinate tokens; no GT boxes are used. The EOS prediction and invalid coordinate geometry are reported. Invalid boxes are **not repaired silently**, so their IoU is zero. Image/text are the **only model inference inputs**; GT is used to form teacher-forced targets during training.
+
+Run on the same cleaned 800-example synthetic joint train / 60-example Mixed validation dataset:
+
+```powershell
+git pull origin main
+python -m pytest -q
+python -m scripts.train_generative --train data/v4_joint/train.jsonl --val data/v4_mixed/val.jsonl --image-root data/v4_mixed --model openai/clip-vit-base-patch16 --epochs 10 --batch-size 4 --out checkpoints/v7_generative_b16.pt
+python -m scripts.evaluate_generative --checkpoint checkpoints/v7_generative_b16.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+python -m scripts.visualize_generative --checkpoint checkpoints/v7_generative_b16.pt --image data/v4_hard/val_0094.png --text "the yellow triangle" --output results/v7_generative_0094.png
+```
+
+**Study points:** teacher forcing vs self-generated history, discrete coordinate quantization, causal self-attention, decoder cross-attention to image/text features, token CE vs geometric IoU, coordinate sequence validity, and the gap between train token accuracy and generated box accuracy. The frozen encoder deliberately simplifies training on an 8GB-class GPU. Compare **mechanisms**, not just benchmark scores; to understand a real Qwen-VL system, later study its native visual encoder, token packing, multimodal LLM and grounding-specific supervised data.
+
 ## V6: multi-scale coarse-to-fine refinement (experimental)
 
 **Research rationale.** V4 Spatial B/16 is the strongest measured Hard Top-1 baseline (80% Acc@0.5, 0.615 Mean IoU); V5 region (52%) and V5.1 anchor-free (66%) have not surpassed it. V6 **retains V4's trained Spatial Head** and learns a residual correction instead of replacing its predictor.
