@@ -99,6 +99,23 @@ To compare against the *unchanged* baseline, evaluate the prior `checkpoints/mix
 
 **Important:** Attention is a learned box-supervised spatial probability map, not an explanation guarantee or pixel-level segmentation mask. The target is box overlap with coarse 7x7 CLIP patches.
 
+## V4: dataset correctness and attribute-confusion tests
+
+**Critical data fix:** Older generator revisions drew triangle masks with `fill=1` instead of `fill=255`. Their triangles were nearly transparent and could appear as another shape below them. This invalidates clean shape-grounding interpretations of prior V1–V3 runs. Do **not** compare new dataset numbers directly to old runs as though only the architecture changed. Archived results remain historical observations, not validated shape benchmarks.
+
+The fixed generator draws opaque triangles, records `target_index`, `same_color_distractors`, `same_shape_distractors`, and prefers hard targets with both kinds of distractors when visible. The original full-object amodal boxes are retained.
+
+Regenerate **new folders** without overwriting old datasets or checkpoints:
+
+```powershell
+git pull origin main
+python -m pytest -q
+python -m scripts.make_toy_data --mode mixed --out data/v4_mixed --train 300 --val 60
+python -m scripts.make_toy_data --mode hard --out data/v4_hard --train 500 --val 100
+```
+
+Before retraining, visually inspect images showing triangles and audit the new JSONL labels; old checkpoint scores should not be used as new V4 performance numbers. Rebuild the joint training JSONL from `v4_mixed/train.jsonl` and `v4_hard/train.jsonl` only, preserving correct image paths, then train B/32 and B/16 with identical data, loss, seed and evaluation splits. This is a new dataset version, **not** a direct continuation of the previous benchmark.
+
 ## Phase 1: actual referring-expression data
 
 Obtain RefCOCO-style images and annotations legally, and split examples by the appropriate dataset protocol. Convert to per-line JSON records:
