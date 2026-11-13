@@ -1,6 +1,6 @@
 import json
 from PIL import Image
-from scripts.make_toy_data import generate, make_scene
+from scripts.make_toy_data import generate, make_scene, shape_mask
 import random
 
 def test_modes_and_labels(tmp_path):
@@ -23,3 +23,21 @@ def test_hard_distractors():
     assert len(objects) >= 5
     assert len({(o["color"],o["shape"]) for o in objects}) == len(objects)
     assert any(o["color"] == objects[0]["color"] and o != objects[0] for o in objects)
+
+def test_triangle_is_fully_opaque():
+    mask=shape_mask("triangle",[32,32,96,96])
+    assert mask.getpixel((64,65))==255
+    assert mask.getpixel((32,32))==0
+
+def test_hard_target_metadata():
+    _,row=make_scene(random.Random(42),"hard")
+    target=row["objects"][row["target_index"]]
+    assert row["expression"]==f'the {target["color"]} {target["shape"]}'
+    assert row["same_color_distractors"]==sum(
+        o["color"]==target["color"] and i!=row["target_index"]
+        for i,o in enumerate(row["objects"])
+    )
+    assert row["same_shape_distractors"]==sum(
+        o["shape"]==target["shape"] and i!=row["target_index"]
+        for i,o in enumerate(row["objects"])
+    )
