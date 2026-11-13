@@ -17,9 +17,10 @@ def main():
     p.add_argument("--lr",type=float,default=1e-4)
     p.add_argument("--out",default="checkpoints/grounder.pt")
     p.add_argument("--model",default="openai/clip-vit-base-patch32")
-    p.add_argument("--arch",choices=["baseline","spatial"],default="spatial")
+    p.add_argument("--arch",choices=["baseline","spatial","region"],default="spatial")
     p.add_argument("--loss",choices=["iou","giou"],default="giou")
-    p.add_argument("--spatial-weight",type=float,default=1.0)
+    p.add_argument("--spatial-weight",type=float,default=1.0,
+                   help="Spatial CE weight for spatial arch; candidate selection CE weight for region arch")
     a=p.parse_args()
     torch.manual_seed(42);random.seed(42)
     device="cuda" if torch.cuda.is_available() else "cpu"
