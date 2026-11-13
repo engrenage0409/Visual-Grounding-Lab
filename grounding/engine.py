@@ -4,9 +4,12 @@ import torch.nn.functional as F
 from .geometry import box_iou_aligned,generalized_iou_aligned
 from .spatial import spatial_cross_entropy
 from .region import region_grounding_loss
+from .anchor_free import anchor_free_loss
 
 def grounding_loss(pred,target,aux=None,loss_type="giou",spatial_weight=1.0):
     """One-box regression. Optional spatial CE target is area-overlap soft patch mask."""
+    if aux and "af_class_logits" in aux:
+        return anchor_free_loss(pred,target,aux,loss_type=loss_type,region_weight=spatial_weight)
     if aux and "region_logits" in aux:
         return region_grounding_loss(pred,target,aux,loss_type=loss_type,region_weight=spatial_weight)
     iou=box_iou_aligned(pred,target)
