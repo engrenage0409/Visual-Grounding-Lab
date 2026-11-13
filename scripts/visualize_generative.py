@@ -13,13 +13,14 @@ def main():
     p.add_argument("--image",required=True)
     p.add_argument("--text",required=True)
     p.add_argument("--output",default="results/v7_generative.png")
+    p.add_argument("--constrain-box",action="store_true")
     a=p.parse_args()
     device="cuda" if torch.cuda.is_available() else "cpu"
     model,_=load_generative(a.checkpoint,device)
     with Image.open(a.image) as img:
         im=img.convert("RGB")
     with torch.inference_mode():
-        result=model.generate([im],[a.text])
+        result=model.generate([im],[a.text],constrain_box=a.constrain_box)
     coords=result["tokens"][0,:4].cpu().tolist()
     box=result["boxes"][0].cpu().tolist()
     width,height=im.size
@@ -37,7 +38,7 @@ def main():
                       "coordinate_tokens":coords,"bbox_xyxy_normalized":box,
                       "bbox_xyxy_pixels":pixel,"valid_box":valid,
                       "eos_correct":bool(result["eos_correct"][0]),
-                      "output":str(out)},indent=2))
+                      "constrain_box":a.constrain_box,"output":str(out)},indent=2))
 
 
 if __name__=="__main__":
