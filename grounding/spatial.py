@@ -1,4 +1,4 @@
-"""Spatial supervision for a 7x7 CLIP patch grid and valid box geometry."""
+"""Spatial supervision for square CLIP patch grids and valid box geometry."""
 import torch
 import torch.nn.functional as F
 
