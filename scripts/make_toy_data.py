@@ -32,7 +32,7 @@ def shape_mask(shape, box):
     elif shape == "circle":
         draw.ellipse(box, fill=255)
     elif shape == "triangle":
-        draw.polygon([(int((x0+x1)/2), y0), (x0, y1), (x1, y1)], fill=1)
+        draw.polygon([(int((x0+x1)/2), y0), (x0, y1), (x1, y1)], fill=255)
     else:
         raise ValueError(f"Unknown shape: {shape}")
     return mask
@@ -107,14 +107,22 @@ def make_scene(rng, mode):
     later_coverage = Image.new("L", (SIZE, SIZE), 0)
     for mask in reversed(masks):
         total = mask.getbbox()
-        original_area = sum(mask.getdata())
+        original_area = sum(mask.get_flattened_data())
         still_visible = ImageChops.subtract(mask, later_coverage)
-        ratio = sum(still_visible.getdata())/max(1, original_area)
+        ratio = sum(still_visible.get_flattened_data())/max(1, original_area)
         visible.append(ratio)
         later_coverage = ImageChops.lighter(later_coverage, mask)
     visible.reverse()
     options = [i for i, ratio in enumerate(visible) if ratio >= 0.68]
-    target_idx = rng.choice(options) if options else len(objects)-1
+    # In hard mode, prefer a target that has both a same-color and a same-shape distractor.
+    # This makes attribute composition measurable rather than accidental.
+    if mode == "hard":
+        difficult = [i for i in options if
+                     any(j != i and o["color"] == objects[i]["color"] for j,o in enumerate(objects)) and
+                     any(j != i and o["shape"] == objects[i]["shape"] for j,o in enumerate(objects))]
+        target_idx = rng.choice(difficult or options) if options else len(objects)-1
+    else:
+        target_idx = rng.choice(options) if options else len(objects)-1
     target = objects[target_idx]
     label = {
         "expression": f'the {target["color"]} {target["shape"]}',
@@ -122,6 +130,9 @@ def make_scene(rng, mode):
         "target_visible_fraction": round(visible[target_idx], 3),
         "bbox_type": "amodal",
         "difficulty": mode,
+        "same_color_distractors": sum(o["color"] == target["color"] and i != target_idx for i,o in enumerate(objects)),
+        "same_shape_distractors": sum(o["shape"] == target["shape"] and i != target_idx for i,o in enumerate(objects)),
+        "target_index": target_idx,
         "objects": objects,
     }
     return image, label
