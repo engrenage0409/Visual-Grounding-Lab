@@ -1,3 +1,34 @@
+## V7.2 | Spatial-to-Generative Grounding (mechanism ablation)
+
+**Research question:** If a trained spatial grounder already knows approximately WHERE an object is, can a newly trained coordinate-token decoder learn to EXPRESS that location? Compare a generative decoder with a continuous regression head conditioned on **identical frozen V6 predictions and spatial features**. This isolates the *output formulation on a spatially pretrained representation*; it does **not** reproduce Qwen-VL and cannot demonstrate that a pretrained VLM learned grounding through this same mechanism.
+
+Architecture shared by both heads:
+- Load frozen `checkpoints/v6_refine_b16.pt` (V6 already trained on the same V4 synthetic training data).
+- Run V6 on image + text and extract text-conditioned patch features `[B,196,256]`, text-query features, spatial probabilities, and its **predicted box**. GT is never given to this stage.
+- A small trainable adaptor makes `198` memory tokens (196 spatial + text + V6 prediction); **both heads receive the same information**.
+- **Generative:** 2-layer causal Transformer Decoder, teacher-forced `[BOS,x1,y1,x2,y2]` -> `[x1,y1,x2,y2,EOS]`, coordinate-token CE. Actual inference uses generated history and no GT. Default `--coord-max 100` (vocabulary=103).
+- **Regression:** residual MLP on the V6 predicted box and the same pooled spatial/text/box features, trained with L1 + GIoU; initialized as an *identity on the V6 prediction*. This branch is a **refinement baseline**, not a random regression head.
+- Evaluation reports generative/regression Top-1, Mean IoU, invalid-box fraction, and the frozen V6 base result, so that the reader can see whether output heads improve or degrade the original model.
+
+The V6 prediction included as a memory token makes this a **conditional localization-to-coordinate-serialization** experiment. A strong result does *not* prove the decoder independently extracted the object location from raw visual patches, and the regression branch has an explicit residual inductive bias. These are useful comparisons but not a perfectly architecture-controlled causal study. The supplied V6 checkpoint remains **frozen** and V1–V7.1 scripts/weights are untouched.
+
+```powershell
+git pull origin main
+python -m pytest -q
+
+# Study coordinate-token generation, initialized from pretrained spatial knowledge.
+python -m scripts.train_spatial_to_box --mode generative --v6-checkpoint checkpoints/v6_refine_b16.pt --coord-max 100 --train data/v4_joint/train.jsonl --val data/v4_mixed/val.jsonl --image-root data/v4_mixed --epochs 10 --batch-size 4 --out checkpoints/v7_2_spatial_gen_q100.pt
+
+# Control experiment: same frozen V6, train a residual regression head.
+python -m scripts.train_spatial_to_box --mode regression --v6-checkpoint checkpoints/v6_refine_b16.pt --train data/v4_joint/train.jsonl --val data/v4_mixed/val.jsonl --image-root data/v4_mixed --epochs 10 --batch-size 4 --out checkpoints/v7_2_spatial_reg.pt
+
+# Held-out Hard, reports V6 base within each run.
+python -m scripts.evaluate_spatial_to_box --checkpoint checkpoints/v7_2_spatial_gen_q100.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+python -m scripts.evaluate_spatial_to_box --checkpoint checkpoints/v7_2_spatial_reg.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+```
+
+If you relocate V6 weights, add `--v6-checkpoint path/to/v6_refine_b16.pt` to evaluation. Save all new heads to unique paths; the V7.2 checkpoint contains trainable head weights only, not frozen V6 or CLIP parameters. As a **next study**, ablate the predicted-box token to see how much the generator truly exploits spatial patch evidence rather than simply copying the supplied V6 box. GPU validation has not yet been performed; do not assume V7.2 improves performance until measurements exist.
+
 ## V7.1: diagnose learning of coordinate tokens (experimental)
 
 V7 was able to reduce training token CE from ~5.0 to ~3.15 but measured 0% Hard Acc@0.5. Since EOS is always the fifth target token, a perfect EOS predictor can attain 20% token accuracy **without locating anything**. V7.1 adds more informative diagnostics and coordinate-vocabulary ablations while **preserving V7's existing checkpoint and V1–V6 heads**.
