@@ -41,3 +41,30 @@ def test_decoder_causal_mask_and_ce_gradient_without_clip_download():
     loss=nn.functional.cross_entropy(a.reshape(-1,VOCAB_SIZE),targets.reshape(-1))
     loss.backward()
     assert fake.lm_head.weight.grad.abs().sum()>0
+
+
+def test_v71_coordinate_vocab_ablation():
+    boxes=torch.tensor([[0.121, 0.233, 0.711, 0.944]])
+    for resolution in (100,224,1000):
+        x,y=teacher_forcing_sequences(boxes,coord_max=resolution)
+        assert x[0,0]==resolution+1
+        assert y[0,-1]==resolution+2
+        assert y.max()<=resolution+2
+        assert torch.equal(x[:,1:],y[:,:4])
+        reconstructed=tokens_to_boxes(y[:,:4],coord_max=resolution)
+        assert (reconstructed-boxes).abs().max() <= .5/resolution+1e-6
+
+
+def test_v71_box_coordinate_metrics_from_logits():
+    # A correct EOS says nothing about the four predicted coordinates.
+    resolution=100
+    gt=torch.tensor([[.1,.2,.7,.8]])
+    _,targets=teacher_forcing_sequences(gt,coord_max=resolution)
+    prediction=targets.clone()
+    prediction[:,:4]=0
+    full=(prediction==targets).float().mean().item()
+    coordinate=(prediction[:,:4]==targets[:,:4]).float().mean().item()
+    eos=(prediction[:,4]==targets[:,4]).float().mean().item()
+    assert abs(full-.2)<1e-6
+    assert coordinate==0.
+    assert eos==1.
