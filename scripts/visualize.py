@@ -28,6 +28,17 @@ def main():
     canvas.save(out)
     result={"output":str(out),"arch":ck.get("arch","baseline"),
             "bbox_xyxy_normalized":box,"bbox_xyxy_pixels":xyxy}
+    if "region_boxes" in aux:
+        # Thin orange outlines mark other top candidate proposals (selected is red).
+        topk=aux["topk_indices"][0].detach().cpu().tolist()
+        proposals=aux["region_boxes"][0].detach().cpu()
+        for idx in topk[1:]:
+            b=proposals[idx].tolist()
+            draw.rectangle([b[0]*w,b[1]*h,b[2]*w,b[3]*h],outline=(245,160,30),width=1)
+        # Selected box is red again on top of diagnostic proposals.
+        draw.rectangle(xyxy,outline=(250,35,45),width=max(2,w//128))
+        canvas.save(out)
+        result["topk_indices"]=topk
     if a.heatmap and "spatial_probs" in aux:
         import numpy as np
         patch_probs=aux["spatial_probs"][0]
