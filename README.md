@@ -1,3 +1,22 @@
+## V6: multi-scale coarse-to-fine refinement (experimental)
+
+**Research rationale.** V4 Spatial B/16 is the strongest measured Hard Top-1 baseline (80% Acc@0.5, 0.615 Mean IoU); V5 region (52%) and V5.1 anchor-free (66%) have not surpassed it. V6 **retains V4's trained Spatial Head** and learns a residual correction instead of replacing its predictor.
+
+`--arch coarse_fine` first produces the **same V4 Spatial box**, then samples a 3x3 ROI from both the native CLIP patch map (14x14 for ViT-B/16) and its pooled 7x7 map. The two ROI features, language representation, and original box pass through a zero-initialized residual MLP to shift center and scale width/height. This is **two pooled scales of one final CLIP feature map**, not a true multi-layer FPN or a separate higher-resolution vision encoder. This first V6 implementation focuses on refinement, not recovering entirely missed objects; because it uses the V4 predicted ROI, large target-selection errors can persist.
+
+The final residual layer initializes at zero: **before training**, a V6 model correctly initialized from V4 emits the original V4 boxes. `--freeze-coarse` trains only the refinement module; without it, the V4 coarse head can also change. Previous `spatial`, `region`, `region_af`, and `baseline` architectures remain compatible with their checkpoints.
+
+```powershell
+git pull origin main
+python -m pytest -q
+python -m scripts.train --arch coarse_fine --init-checkpoint checkpoints/v4_b16.pt --freeze-coarse --model openai/clip-vit-base-patch16 --loss giou --spatial-weight 0 --train data/v4_joint/train.jsonl --val data/v4_mixed/val.jsonl --image-root data/v4_mixed --epochs 10 --batch-size 4 --lr 1e-4 --out checkpoints/v6_refine_b16.pt
+python -m scripts.evaluate --checkpoint checkpoints/v4_b16.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+python -m scripts.evaluate --checkpoint checkpoints/v6_refine_b16.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+python -m scripts.visualize --checkpoint checkpoints/v6_refine_b16.pt --image data/v4_hard/val_0094.png --text "the yellow triangle" --output results/v6_val0094.png --heatmap results/v6_val0094_heatmap.png
+```
+
+Check performance on **the same V4 Hard set**, and do not overwrite `checkpoints/v4_b16.pt`. A stronger V6-B later could integrate proposal-aware features or pretrained multilevel backbone features, after this ablation has been measured. New code has not yet been tested on the user's GPU; no V6 performance improvement is claimed.
+
 # Visual Grounding Lab — Referring Expression → Bounding Box
 
 Starter implementation of **trainable language-guided object localization** on an 8GB-class GPU, e.g. RTX 5060. Uses **frozen CLIP ViT-B/32 image patch and text representations**, plus trainable projections, cross-attention and one-box regression head. This is a learning baseline, **not** a trained RefCOCO benchmark or Grounding DINO reproduction.
