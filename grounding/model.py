@@ -127,6 +127,8 @@ class CLIPGrounder(nn.Module):
             coarse_boxes=boxes
             refined,delta=self.refiner(visual,query,coarse_boxes.detach(),self.grid)
             aux={"coarse_boxes":coarse_boxes,"refine_delta":delta,
-                 "spatial_probs":probs}
+                 "spatial_probs":probs,
+                 "conditioned_tokens":conditioned,
+                 "text_query":query}
             boxes=refined
         return (boxes,aux) if return_aux else boxes
