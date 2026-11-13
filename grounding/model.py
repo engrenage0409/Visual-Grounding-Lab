@@ -1,4 +1,3 @@
-import math
 import torch
 from torch import nn
 import torch.nn.functional as F
@@ -17,6 +16,7 @@ class CLIPGrounder(nn.Module):
         super().__init__()
         if arch not in ("baseline","spatial"): raise ValueError("Unknown architecture")
         self.arch=arch
+        self.model_name=model_name
         self.processor=CLIPProcessor.from_pretrained(model_name)
         self.clip=CLIPModel.from_pretrained(model_name)
         self.clip.requires_grad_(False)
@@ -29,7 +29,14 @@ class CLIPGrounder(nn.Module):
             self.head=nn.Sequential(nn.LayerNorm(hidden),nn.Linear(hidden,hidden),
                                     nn.GELU(),nn.Linear(hidden,4))
         else:
-            self.patch_position=nn.Parameter(torch.randn(1,49,hidden)*0.02)
+            vision_config=self.clip.config.vision_config
+            image_size=vision_config.image_size
+            patch_size=vision_config.patch_size
+            if not isinstance(image_size,int) or not isinstance(patch_size,int) or image_size%patch_size:
+                raise ValueError(f"Unsupported CLIP vision grid: image_size={image_size}, patch_size={patch_size}")
+            self.grid=image_size//patch_size
+            self.num_patches=self.grid**2
+            self.patch_position=nn.Parameter(torch.randn(1,self.num_patches,hidden)*0.02)
             self.patch_norm=nn.LayerNorm(hidden)
             self.text_norm=nn.LayerNorm(hidden)
             self.patch_fusion=nn.Sequential(nn.Linear(hidden*2,hidden),nn.GELU(),
@@ -58,8 +65,8 @@ class CLIPGrounder(nn.Module):
             out,_=self.attn(q.unsqueeze(1),kv,kv,need_weights=False)
             boxes=cxcywh_to_xyxy(torch.sigmoid(self.head(out[:,0]))).clamp(0,1)
             return (boxes,{}) if return_aux else boxes
-        if kv.shape[1]!=49:
-            raise ValueError("Spatial model currently requires 7x7 CLIP patches")
+        if kv.shape[1]!=self.num_patches:
+            raise ValueError(f"Expected {self.num_patches} patches ({self.grid}x{self.grid}), got {kv.shape[1]}")
         visual=self.patch_norm(kv+self.patch_position)
         query=self.text_norm(q)
         # Language features are included *per spatial token*, not only after pooling.
@@ -67,7 +74,7 @@ class CLIPGrounder(nn.Module):
             [visual,query.unsqueeze(1).expand_as(visual)],dim=-1))
         logits=self.score_head(conditioned).squeeze(-1)
         probs=F.softmax(logits,dim=-1)
-        center=attention_centers(probs,grid=7)
+        center=attention_centers(probs,grid=self.grid)
         attended=(probs.unsqueeze(-1)*visual).sum(1)
         size=torch.sigmoid(self.size_head(torch.cat([attended,query],dim=-1)))
         boxes=center_size_to_valid_xyxy(center,size)
