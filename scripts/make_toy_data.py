@@ -24,13 +24,13 @@ SHAPES = ("rectangle", "circle", "triangle")
 SIZE = 224
 
 def shape_mask(shape, box):
-    mask = Image.new("1", (SIZE, SIZE), 0)
+    mask = Image.new("L", (SIZE, SIZE), 0)
     draw = ImageDraw.Draw(mask)
     x0, y0, x1, y1 = box
     if shape == "rectangle":
-        draw.rectangle(box, fill=1)
+        draw.rectangle(box, fill=255)
     elif shape == "circle":
-        draw.ellipse(box, fill=1)
+        draw.ellipse(box, fill=255)
     elif shape == "triangle":
         draw.polygon([(int((x0+x1)/2), y0), (x0, y1), (x1, y1)], fill=1)
     else:
@@ -74,12 +74,16 @@ def make_scene(rng, mode):
         n = rng.randint(3, 5) if mode == "mixed" else rng.randint(5, 7)
         # Each color/shape combination is unique: expression identifies one object.
         combinations = [(c, s) for c in PALETTE for s in SHAPES]
-        pairs = rng.sample(combinations, n)
-        # In hard mode force at least one competing same-color or same-shape object.
+        # Sample distinct attribute pairs; hard cases force color/shape lookalikes.
         if mode == "hard":
-            chosen_color, chosen_shape = pairs[0]
-            pairs[1] = (chosen_color, next(s for s in SHAPES if s != chosen_shape))
-            pairs[2] = (next(c for c in PALETTE if c != chosen_color), chosen_shape)
+            chosen_color, chosen_shape = rng.choice(combinations)
+            same_color = (chosen_color, rng.choice([s for s in SHAPES if s != chosen_shape]))
+            same_shape = (rng.choice([c for c in PALETTE if c != chosen_color]), chosen_shape)
+            forced = [(chosen_color, chosen_shape), same_color, same_shape]
+            remaining = [pair for pair in combinations if pair not in forced]
+            pairs = forced + rng.sample(remaining, n-len(forced))
+        else:
+            pairs = rng.sample(combinations, n)
         objects = []
         for color, shape in pairs:
             box = sample_box(rng, mode, [o["bbox_xyxy"] for o in objects])
@@ -100,7 +104,7 @@ def make_scene(rng, mode):
         masks.append(mask)
     # Compute visible fraction with later layers covering earlier layers.
     visible = []
-    later_coverage = Image.new("1", (SIZE, SIZE), 0)
+    later_coverage = Image.new("L", (SIZE, SIZE), 0)
     for mask in reversed(masks):
         total = mask.getbbox()
         original_area = sum(mask.getdata())
