@@ -2,7 +2,7 @@ import argparse,json
 from pathlib import Path
 import torch
 from PIL import Image,ImageDraw
-from grounding.model import CLIPGrounder
+from grounding.checkpoints import load_grounder
 
 def main():
     p=argparse.ArgumentParser()
@@ -10,14 +10,14 @@ def main():
     p.add_argument("--text",required=True)
     p.add_argument("--checkpoint",default="checkpoints/grounder.pt")
     p.add_argument("--output",default="results/grounding_preview.png")
+    p.add_argument("--heatmap",default=None,help="Optional spatial 7x7 heatmap overlay PNG")
     a=p.parse_args()
     device="cuda" if torch.cuda.is_available() else "cpu"
-    ck=torch.load(a.checkpoint,map_location="cpu",weights_only=True)
-    model=CLIPGrounder(ck["model_name"]).to(device)
-    model.load_state_dict(ck["head"],strict=False);model.eval()
+    model,ck=load_grounder(a.checkpoint,device)
     with Image.open(a.image) as f: im=f.convert("RGB")
     with torch.inference_mode():
-        box=model([im],[a.text])[0].cpu().tolist()
+        boxes,aux=model([im],[a.text],return_aux=True)
+        box=boxes[0].cpu().tolist()
     w,h=im.size
     xyxy=[box[0]*w,box[1]*h,box[2]*w,box[3]*h]
     canvas=im.copy();draw=ImageDraw.Draw(canvas)
@@ -25,7 +25,19 @@ def main():
     draw.text((5,5),a.text,fill=(250,35,45))
     out=Path(a.output);out.parent.mkdir(parents=True,exist_ok=True)
     canvas.save(out)
-    print(json.dumps({"output":str(out),"bbox_xyxy_pixels":xyxy}))
+    result={"output":str(out),"arch":ck.get("arch","baseline"),
+            "bbox_xyxy_normalized":box,"bbox_xyxy_pixels":xyxy}
+    if a.heatmap and "spatial_probs" in aux:
+        import numpy as np
+        prob=aux["spatial_probs"][0].reshape(7,7).cpu().numpy()
+        prob=(prob-prob.min())/(np.ptp(prob)+1e-9)
+        heat=Image.fromarray(np.uint8(prob*255),"L").resize(im.size,Image.Resampling.BILINEAR)
+        red=Image.new("RGB",im.size,(255,30,30))
+        overlay=Image.composite(red,im,heat.point(lambda x:int(x*0.58)))
+        heat_path=Path(a.heatmap);heat_path.parent.mkdir(parents=True,exist_ok=True)
+        overlay.save(heat_path)
+        result["heatmap"]=str(heat_path)
+    print(json.dumps(result,indent=2))
 
 if __name__=="__main__":
     main()
