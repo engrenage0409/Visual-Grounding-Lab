@@ -73,6 +73,16 @@ These numbers establish which samples fail, **not why**: without viewing GT/pred
 
 From the uploaded V4 B/16 and V6 Hard100 reports: V4 small-object accuracy **29/43 (67.44%)** → V6 **36/43 (83.72%)**; medium-object **51/57 (89.47%)** → **50/57 (87.72%)**. Paired V4→V6 transitions: eight corrections and two regressions, net six improved, which supports the hypothesis that this V6 refinement especially helps small objects. V6 draws two scales from the **same final CLIP feature map** (14×14 and pooled 7×7), **not** a multilevel FPN.
 
+### Regenerate the before/after paired comparison
+
+Place the two evaluation CSVs at `results/qwen_before.csv` and `results/qwen_after.csv`, then run:
+
+```powershell
+python -m scripts.analyze_qwen_pair --before results/qwen_before.csv --after results/qwen_after.csv --out results/qwen_paired_summary.json
+```
+
+This checks that both files contain the same unique image/expression keys and identical GT boxes, and prints the confusion transitions, shape breakdown, IoU changes and remaining failures. The aggregate statistics quoted in this report were checked directly from the uploaded CSV files.
+
 ## Training and compute
 
 - Hardware: user's RTX 5060 8GB, Windows/Conda `pytorch_env`.
