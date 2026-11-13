@@ -1,3 +1,36 @@
+## V8 (final study): Qwen3-VL pretrained grounding + 4-bit LoRA adaptation
+
+**Research objective:** Determine what coordinate generation capability already exists in a pretrained multimodal LLM, and how a small supervised grounding dataset changes it. This is different from V7's randomly initialized decoder and V7.2's frozen V6 box-conditioned decoder. A successful LoRA experiment demonstrates *adaptation of a pretrained capability*, not the original source of Qwen's pretraining knowledge.
+
+Use the real `Qwen/Qwen3-VL-2B-Instruct` with **ms-swift** for SFT/LoRA. Official Qwen3-VL grounding uses relative coordinates normalized to **0..1000**. The converter deliberately uses a *literal assistant JSON* response `{"bbox_2d":[x1,y1,x2,y2]}`, rather than ms-swift's `<bbox>` placeholder object format; its prompt is identical during baseline/adapted evaluation. This is a small task-specific SFT experiment on synthetic colored shapes, **not** RefCOCO or a general grounding benchmark.
+
+Run from PowerShell at repository root:
+
+```powershell
+git pull origin main
+python -m pip install "transformers>=4.57" "peft>=0.13" "accelerate>=1.0" bitsandbytes "ms-swift>=3.9.1"
+python -m scripts.prepare_qwen_grounding --source data/v4_joint/train.jsonl --image-root data/v4_mixed --out data/qwen_grounding/train.jsonl
+python -m scripts.prepare_qwen_grounding --source data/v4_mixed/val.jsonl --image-root data/v4_mixed --out data/qwen_grounding/val.jsonl
+
+# BEFORE fine-tuning: pretrained Qwen3-VL on the held-out Hard100 subset
+python -m scripts.evaluate_qwen_grounding --model Qwen/Qwen3-VL-2B-Instruct --data data/v4_hard/val.jsonl --image-root data/v4_hard --limit 100 --out results/qwen_before.csv
+
+# Training: QLoRA 4-bit + rank 8, freeze image encoder and aligner.
+# On Windows, if the ms-swift CLI or bitsandbytes CUDA backend fails,
+# run this command in a supported Linux CUDA environment instead.
+$env:IMAGE_MAX_TOKEN_NUM="256"
+swift sft --model Qwen/Qwen3-VL-2B-Instruct --dataset data/qwen_grounding/train.jsonl --val_dataset data/qwen_grounding/val.jsonl --train_type lora --quant_method bnb --quant_bits 4 --torch_dtype bfloat16 --num_train_epochs 1 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 4 --gradient_checkpointing true --freeze_vit true --freeze_aligner true --lora_rank 8 --lora_alpha 16 --learning_rate 1e-4 --max_length 1024 --save_steps 100 --logging_steps 20 --output_dir checkpoints/qwen_grounding_lora
+
+# AFTER: replace adapter path with the checkpoint-* directory created by swift sft.
+python -m scripts.evaluate_qwen_grounding --model Qwen/Qwen3-VL-2B-Instruct --adapter checkpoints/qwen_grounding_lora/vx-xxx/checkpoint-xxx --data data/v4_hard/val.jsonl --image-root data/v4_hard --limit 100 --out results/qwen_after.csv
+```
+
+The 8GB VRAM target is **best effort** (4-bit base, batch 1, restricted image tokens, short sequence, rank 8). An out-of-memory or Windows bitsandbytes incompatibility may require Linux, smaller image resolution, CPU offload or a larger GPU. Qwen model download/weights are **not** committed to this repo.
+
+The evaluator logs raw generated strings, parsed boxes, parse success, valid boxes, IoU and Acc@0.5; invalid or missing JSON counts as IoU 0. Review `results/qwen_before.csv` and `results/qwen_after.csv`, not just training CE. **Important:** synthetic hard-set boxes are *amodal full-object boxes*, whereas pretrained model's common visible-box grounding can differ. This affects the interpretation of occluded-object IoU.
+
+References: https://github.com/QwenLM/Qwen3-VL and https://swift.readthedocs.io/en/v3.10/BestPractices/Qwen3-VL-Best-Practice.html
+
 ## V7.2 | Spatial-to-Generative Grounding (mechanism ablation)
 
 **Research question:** If a trained spatial grounder already knows approximately WHERE an object is, can a newly trained coordinate-token decoder learn to EXPRESS that location? Compare a generative decoder with a continuous regression head conditioned on **identical frozen V6 predictions and spatial features**. This isolates the *output formulation on a spatially pretrained representation*; it does **not** reproduce Qwen-VL and cannot demonstrate that a pretrained VLM learned grounding through this same mechanism.
