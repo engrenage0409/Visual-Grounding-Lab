@@ -1,3 +1,4 @@
+import math
 import torch
 import torch.nn.functional as F
 from .geometry import box_iou_aligned,generalized_iou_aligned
@@ -9,8 +10,12 @@ def grounding_loss(pred,target,aux=None,loss_type="giou",spatial_weight=1.0):
     geometric=(1-generalized_iou_aligned(pred,target)).mean() if loss_type=="giou" else (1-iou).mean()
     box_l1=F.l1_loss(pred,target)
     loss=box_l1+geometric
-    if aux and "spatial_logits" in aux:
-        loss=loss+spatial_weight*spatial_cross_entropy(aux["spatial_logits"],target,grid=7)
+    if aux and "spatial_logits" in aux and spatial_weight!=0:
+        logits=aux["spatial_logits"]
+        grid=math.isqrt(logits.shape[-1])
+        if grid*grid!=logits.shape[-1]:
+            raise ValueError(f"Spatial logits must form a square grid, got {logits.shape[-1]} patches")
+        loss=loss+spatial_weight*spatial_cross_entropy(logits,target,grid=grid)
     return loss,iou
 
 @torch.no_grad()
