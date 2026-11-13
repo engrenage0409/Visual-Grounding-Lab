@@ -5,6 +5,7 @@ from transformers import CLIPModel,CLIPProcessor
 from .geometry import cxcywh_to_xyxy
 from .spatial import attention_centers,center_size_to_valid_xyxy
 from .region import region_candidates
+from .anchor_free import anchor_free_candidates
 
 class CLIPGrounder(nn.Module):
     """Frozen CLIP patch/text representations + trainable box head.
@@ -16,7 +17,7 @@ class CLIPGrounder(nn.Module):
     """
     def __init__(self,model_name="openai/clip-vit-base-patch32",hidden=256,arch="baseline"):
         super().__init__()
-        if arch not in ("baseline","spatial","region"): raise ValueError("Unknown architecture")
+        if arch not in ("baseline","spatial","region","region_af"): raise ValueError("Unknown architecture")
         self.arch=arch
         self.model_name=model_name
         self.processor=CLIPProcessor.from_pretrained(model_name)
@@ -47,9 +48,12 @@ class CLIPGrounder(nn.Module):
             if arch=="spatial":
                 self.size_head=nn.Sequential(nn.Linear(hidden*2,hidden),nn.GELU(),
                                              nn.Linear(hidden,2))
-            else:
+            elif arch=="region":
                 self.region_offset_head=nn.Linear(hidden,2)
                 self.region_size_head=nn.Linear(hidden,2)
+            else:
+                self.af_distance_head=nn.Linear(hidden,4)
+                self.af_quality_head=nn.Linear(hidden,1)
     def train(self,mode=True):
         super().train(mode)
         self.clip.eval()
@@ -80,6 +84,18 @@ class CLIPGrounder(nn.Module):
             [visual,query.unsqueeze(1).expand_as(visual)],dim=-1))
         logits=self.score_head(conditioned).squeeze(-1)
         probs=F.softmax(logits,dim=-1)
+        if self.arch=="region_af":
+            classification,quality,candidates,scores=anchor_free_candidates(
+                conditioned,self.score_head,self.af_distance_head,self.af_quality_head,self.grid)
+            topk=torch.topk(scores,k=min(5,self.num_patches),dim=-1)
+            winner=topk.indices[:,0]
+            batch_idx=torch.arange(scores.shape[0],device=scores.device)
+            boxes=candidates[batch_idx,winner]
+            aux={"af_class_logits":classification,"af_quality_logits":quality,
+                 "region_boxes":candidates,"region_scores":scores,
+                 "spatial_probs":scores / scores.sum(-1,keepdim=True).clamp(min=1e-8),
+                 "topk_indices":topk.indices,"topk_scores":topk.values}
+            return (boxes,aux) if return_aux else boxes
         if self.arch=="region":
             logits,candidates=region_candidates(conditioned,self.score_head,
                 self.region_offset_head,self.region_size_head,self.grid)
