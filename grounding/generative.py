@@ -139,6 +139,9 @@ class GenerativeGrounder(nn.Module):
             next_logits = self.decode(decoder_ids, memory)[:, -1]
             if step < 4:
                 coord_logits = next_logits[:, :self.coord_max+1]
+                if constrain_box and step in (0, 1):
+                    coord_logits = coord_logits.clone()
+                    coord_logits[:, self.coord_max] = float("-inf")
                 if constrain_box and step in (2, 3):
                     # x2 must exceed x1; y2 must exceed y1. This changes
                     # decoding only; report constraint as an explicit ablation.
