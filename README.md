@@ -116,6 +116,24 @@ python -m scripts.make_toy_data --mode hard --out data/v4_hard --train 500 --val
 
 Before retraining, visually inspect images showing triangles and audit the new JSONL labels; old checkpoint scores should not be used as new V4 performance numbers. Rebuild the joint training JSONL from `v4_mixed/train.jsonl` and `v4_hard/train.jsonl` only, preserving correct image paths, then train B/32 and B/16 with identical data, loss, seed and evaluation splits. This is a new dataset version, **not** a direct continuation of the previous benchmark.
 
+## V5: patch-anchored region selection (experimental)
+
+Historical V1–V4 code is preserved on [`archive/v4-stable`](https://github.com/engrenage0409/Visual-Grounding-Lab/tree/archive/v4-stable). In `main`, `--arch baseline` and `--arch spatial` continue to load prior checkpoints; new V5 functionality uses `--arch region`. Historical trained `.pt` checkpoints are **local files**, not stored in GitHub unless separately uploaded.
+
+**Hypothesis:** V4's expected-center estimator can average two attention peaks into an implausible middle position. V5 assigns each CLIP patch an independent text-conditioned match logit and a candidate xyxy box. At inference, the highest-scored candidate is selected. During training, the cell containing the GT box center receives cross-entropy supervision, and that positive candidate receives box L1 + IoU/GIoU regression. This is a simple patch-anchored candidate selector, **not** full DETR, region proposal networks, or object-level negative mining. `--spatial-weight` controls selection CE weight for `region` and original spatial CE for `spatial`.
+
+Run with the **fixed V4 joint data** (not older datasets containing nearly invisible triangles):
+
+```powershell
+git pull origin main
+python -m pytest -q
+python -m scripts.train --arch region --model openai/clip-vit-base-patch16 --loss giou --spatial-weight 1.0 --train data/v4_joint/train.jsonl --val data/v4_mixed/val.jsonl --image-root data/v4_mixed --epochs 10 --batch-size 4 --out checkpoints/v5_region_b16.pt
+python -m scripts.evaluate --checkpoint checkpoints/v5_region_b16.pt --data data/v4_hard/val.jsonl --image-root data/v4_hard
+python -m scripts.visualize --checkpoint checkpoints/v5_region_b16.pt --image data/v4_hard/val_0094.png --text "the yellow triangle" --output results/v5_val0094.png --heatmap results/v5_val0094_heatmap.png
+```
+
+`visualize` draws the selected candidate in red, additional top-ranked candidate boxes in orange, and an optional score heatmap. Compare against `checkpoints/v4_b16.pt` on **identical** V4 Mixed/Hard sets. V5 has not yet been GPU-trained or verified to outperform V4.
+
 ## Phase 1: actual referring-expression data
 
 Obtain RefCOCO-style images and annotations legally, and split examples by the appropriate dataset protocol. Convert to per-line JSON records:
