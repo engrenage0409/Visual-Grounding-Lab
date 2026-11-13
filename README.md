@@ -4,13 +4,13 @@ Starter implementation of **trainable language-guided object localization** on a
 
 ## Current state
 
-Implemented: three-level synthetic data generator (easy/mixed/hard), JSONL data loader, frozen CLIP visual/text feature extraction, cross-attention, box regression, L1 + IoU loss, evaluation (Acc@IoU≥0.5 and mean IoU), and visualizations. **No official real-data metrics, trained adapters, or SAM masks yet.** Synthetic data is solely for smoke testing. The generator now supports easy, mixed and hard scenes with randomized object positions, shapes, sizes, colors and controlled occlusion. Bounding boxes for occluded targets are full-object (amodal) boxes.
+Implemented: three-level synthetic data generator (easy/mixed/hard), JSONL data loader, frozen CLIP visual/text feature extraction, baseline cross-attention and V2 spatially supervised heads, box regression, L1 + IoU/GIoU loss, evaluation (Acc@IoU≥0.5 and mean IoU), and visualizations. **No official real-data metrics, trained adapters, or SAM masks yet.** Synthetic data is solely for smoke testing. The generator now supports easy, mixed and hard scenes with randomized object positions, shapes, sizes, colors and controlled occlusion. Bounding boxes for occluded targets are full-object (amodal) boxes.
 
 ## Directory structure
 
 ```text
 grounding/
-  model.py           CLIP + cross-attention + box head
+  model.py           Baseline + V2 spatially supervised heads\n  spatial.py         7x7 patch-overlap supervision + spatial center\n  checkpoints.py     Load old and new head-only checkpoints
   geometry.py        box format transformations and aligned IoU
   data.py            image / text / xyxy JSONL data loader
   engine.py          losses and evaluation
@@ -18,7 +18,7 @@ scripts/
   make_toy_data.py   easy/mixed/hard shapes, randomized layouts and occlusion
   train.py           head training
   evaluate.py        validation
-  visualize.py       prediction with drawn rectangle
+  visualize.py       prediction and optional 7x7 spatial heatmap
 tests/
   test_geometry.py   geometry unit tests
 docs/
@@ -74,6 +74,31 @@ python -m scripts.train --train data/mixed/train.jsonl --val data/mixed/val.json
 
 Because images use a synthetic renderer, split samples remain procedurally similar: these numbers do not measure generalization to real referring expressions. Hard-mode occluded boxes are **amodal**. The default synthetic benchmark should not be confused with official RefCOCO annotation protocols.
 
+## Phase 0.5: V2 spatial localization (new)
+
+The first local Mixed run (300 train / 60 validation) achieved **5% Acc@0.5 and 0.0752 mean IoU after 5 epochs**, with nearly identical boxes for different text prompts. This indicates the baseline is not learning effective language-conditioned localization under that setup.
+
+**The original baseline model and checkpoints are preserved.** `--arch spatial` (now the training default) adds a text-conditioned 49-patch spatial probability map, box-overlap soft target supervision, learned patch position embeddings, and a separate width/height head. `--loss giou` adds GIoU to handle non-overlapping boxes. **No V2 validation results have been measured yet.**
+
+After `git pull origin main`:
+
+```powershell
+python -m pytest -q
+python -m scripts.train --arch spatial --loss giou --train data/mixed/train.jsonl --val data/mixed/val.jsonl --image-root data/mixed --epochs 10 --batch-size 4 --out checkpoints/mixed_spatial.pt
+python -m scripts.evaluate --checkpoint checkpoints/mixed_spatial.pt --data data/mixed/val.jsonl --image-root data/mixed
+python -m scripts.evaluate --checkpoint checkpoints/mixed_spatial.pt --data data/hard/val.jsonl --image-root data/hard
+```
+
+Create **one box image and one spatial heatmap**:
+
+```powershell
+python -m scripts.visualize --checkpoint checkpoints/mixed_spatial.pt --image data/mixed/val_0000.png --text "the purple circle" --output results/purple_spatial.png --heatmap results/purple_attention.png
+```
+
+To compare against the *unchanged* baseline, evaluate the prior `checkpoints/mixed.pt`; loaders automatically detect older checkpoints without `arch`. Ablation options: `--arch baseline --loss giou` and `--arch spatial --loss iou`. Keep checkpoints separate. See [V2 experimental design](docs/v2-experiment.md).
+
+**Important:** Attention is a learned box-supervised spatial probability map, not an explanation guarantee or pixel-level segmentation mask. The target is box overlap with coarse 7x7 CLIP patches.
+
 ## Phase 1: actual referring-expression data
 
 Obtain RefCOCO-style images and annotations legally, and split examples by the appropriate dataset protocol. Convert to per-line JSON records:
@@ -99,7 +124,7 @@ Image ── frozen CLIP ViT ── patch embeddings ── projection ─┐
 Text  ── frozen CLIP text encoder ─ pooled vector ─ project ┘
 ```
 
-Vision and text backbone parameters stay frozen. The head emits **one box per expression**; it does not perform region proposal generation, multi-box open-set detection, mask prediction, or multi-scale grounding. CLIP ViT-B/32 has coarse patch spatial resolution, limiting small-object performance.
+Vision and text backbone parameters stay frozen for both architectures. The head emits **one box per expression**; it does not perform region proposal generation, multi-box open-set detection, mask prediction, or multi-scale grounding. CLIP ViT-B/32 has coarse patch spatial resolution, limiting small-object performance.
 
 ## Metrics and limits
 
