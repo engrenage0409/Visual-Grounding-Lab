@@ -1,3 +1,81 @@
+# Visual Grounding Lab
+
+**From CLIP spatial localization to autoregressive coordinate generation and Qwen3-VL LoRA.** A hands-on, **V1–V8** investigation of where visual-language grounding capability comes from.
+
+> **Benchmark scope:** the reported metrics are from a **controlled 100-example synthetic Hard split** of 224×224 colored geometric shapes with distractors and occlusion. They are **not** RefCOCO, real-scene, COCO mAP, or industry deployment claims. The project is about grounding mechanisms, ablations and honest failure analysis.
+
+## Key results
+
+| Experiment | Hard100 Acc@IoU≥0.5 | Mean IoU | Takeaway |
+|---|---:|---:|---|
+| V4 CLIP Spatial, ViT-B/16 | 80% | 0.6150 | Text-conditioned spatial patch scoring |
+| V6 Coarse-to-Fine | 86% | 0.6272 | Helps small-object localization |
+| V7 / V7.1 random-init generative | 0% / 0% | 0.0537 / 0.0748 | Lower token CE does not imply good box IoU |
+| V7.2 conditioned generative | 1% | 0.0251 | Precomputed spatial features did not make this decoder effective |
+| V7.2 conditioned residual regression | 87% | 0.6323 | Keeps V6 prediction via zero-initialized residual |
+| **Qwen3-VL-2B-Instruct before LoRA** | **48%** | **0.4736** | Pretrained grounding ability |
+| **Qwen3-VL after 800-example 4-bit QLoRA** | **94%** | **0.7547** | **+46 pp Acc@0.5; +0.2811 Mean IoU** |
+
+The Qwen figures are based on **100 matched image/expression pairs**. Before/after JSON parse success and valid-box rate were **100%/100%**; 47 wrong predictions became correct, one correct prediction became wrong. The original local LoRA log reports ms-swift 4.6.1, rank 8/alpha 16, one epoch/200 steps, `eval_token_acc=0.7509` (teacher-forced token metric, **not** Grounding Acc), and a saved `checkpoint-200`.
+
+**Start here:**
+- [Full experiment report, per-version scores and six remaining failure cases](docs/experiment-report.md)
+- [Chinese/English résumé descriptions and interview talking points](docs/resume_bullets.md)
+- [Reading list and official reference implementations](docs/reading-list.md)
+
+## What we learned
+
+1. **Explicit grounding:** frozen CLIP patch representations plus a text-conditioned spatial head achieved 80%; pooled-scale ROI refinement reached 86% on the Hard set.
+2. **Generating coordinates is nontrivial:** a newly initialized causal decoder can reduce next-token Cross-Entropy and learn EOS without learning accurate object localization. Teacher-forced IoU remained low in V7/V7.1.
+3. **Not a fair universal generative-vs-regression contest:** the V7.2 regression residual starts from the already-good frozen V6 box; the generative head starts from random decoding weights. Architectural priors and pretrained histories differ.
+4. **Pretrained multimodal grounding matters:** Qwen3-VL already attained 48% before task-specific training. A small targeted QLoRA dataset increased accuracy to 94%, but this **does not establish how Qwen acquired its original grounding knowledge**.
+
+## Architecture overview
+
+```text
+V4/V6 (explicit): Image + referring expression
+       -> frozen CLIP ViT-B/16 patch + text features
+       -> text-conditioned spatial heatmap -> coarse xyxy
+       -> V6 refinement from native 14x14 and pooled 7x7 features -> box
+
+V7/V7.1 (generative, from scratch):
+       Image + text -> frozen CLIP representations
+       -> trainable causal Transformer Decoder
+       -> [x1, y1, x2, y2, EOS] as discrete tokens
+
+V7.2 (conditioned): Image + text -> frozen trained V6
+       -> spatial tokens + text query + predicted V6 box
+       -> [generative decoder] OR [zero-residual box regressor]
+
+V8 (pretrained VLM): Image + grounding instruction
+       -> Qwen3-VL-2B-Instruct (4-bit) + LoRA
+       -> JSON coordinate output on 0..1000 coordinate scale
+```
+
+## Quick start
+
+Use your CUDA-enabled Python environment from the repository root:
+
+```powershell
+python -m pip install -r requirements.txt
+python -m pytest -q
+python -m scripts.make_toy_data
+```
+
+For the **final Qwen3-VL experiment**, use the exact reproducibility instructions in [docs/experiment-report.md](docs/experiment-report.md). **ms-swift 4.x uses `--tuner_type lora`**, not the outdated `--train_type lora`. Model files are loaded from local Hugging Face or ModelScope caches and LoRA checkpoints are *not* included in Git. This training was run on Windows with an 8GB-class NVIDIA GPU, but actual runtime and peak VRAM depend on the environment.
+
+## Limitations and responsible interpretation
+
+- The test images are **synthetic** and generated from the same family as training. Full-object (amodal) boxes for occluded shapes differ from typical visible-box grounding annotations.
+- Hard100 contains only 100 examples. No real-image, cross-domain, multi-seed, or RefCOCO evaluation is claimed.
+- A predicted-box-conditioned decoder does not recreate Qwen's native training mechanism. Neither our experiments nor a high score proves that Qwen performs proposal-neighborhood searches.
+- For deep architecture, data-format, and failure details, see the linked report rather than inferring conclusions from token accuracy alone.
+
+---
+
+<details>
+<summary>Earlier chronological development notes and commands (V1–V8)</summary>
+
 ## V8 (final study): Qwen3-VL pretrained grounding + 4-bit LoRA adaptation
 
 **Research objective:** Determine what coordinate generation capability already exists in a pretrained multimodal LLM, and how a small supervised grounding dataset changes it. This is different from V7's randomly initialized decoder and V7.2's frozen V6 box-conditioned decoder. A successful LoRA experiment demonstrates *adaptation of a pretrained capability*, not the original source of Qwen's pretraining knowledge.
@@ -19,7 +97,7 @@ python -m scripts.evaluate_qwen_grounding --model Qwen/Qwen3-VL-2B-Instruct --da
 # On Windows, if the ms-swift CLI or bitsandbytes CUDA backend fails,
 # run this command in a supported Linux CUDA environment instead.
 $env:IMAGE_MAX_TOKEN_NUM="256"
-swift sft --model Qwen/Qwen3-VL-2B-Instruct --dataset data/qwen_grounding/train.jsonl --val_dataset data/qwen_grounding/val.jsonl --train_type lora --quant_method bnb --quant_bits 4 --torch_dtype bfloat16 --num_train_epochs 1 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 4 --gradient_checkpointing true --freeze_vit true --freeze_aligner true --lora_rank 8 --lora_alpha 16 --learning_rate 1e-4 --max_length 1024 --save_steps 100 --logging_steps 20 --output_dir checkpoints/qwen_grounding_lora
+swift sft --model Qwen/Qwen3-VL-2B-Instruct --dataset data/qwen_grounding/train.jsonl --val_dataset data/qwen_grounding/val.jsonl --tuner_type lora --quant_method bnb --quant_bits 4 --torch_dtype bfloat16 --num_train_epochs 1 --per_device_train_batch_size 1 --per_device_eval_batch_size 1 --gradient_accumulation_steps 4 --gradient_checkpointing true --freeze_vit true --freeze_aligner true --lora_rank 8 --lora_alpha 16 --learning_rate 1e-4 --max_length 1024 --save_steps 100 --logging_steps 20 --output_dir checkpoints/qwen_grounding_lora
 
 # AFTER: replace adapter path with the checkpoint-* directory created by swift sft.
 python -m scripts.evaluate_qwen_grounding --model Qwen/Qwen3-VL-2B-Instruct --adapter checkpoints/qwen_grounding_lora/vx-xxx/checkpoint-xxx --data data/v4_hard/val.jsonl --image-root data/v4_hard --limit 100 --out results/qwen_after.csv
@@ -347,3 +425,5 @@ Vision and text backbone parameters stay frozen for both architectures. The head
 5. Optional SAM box-prompt segmentation.
 
 See [papers and resources](docs/reading-list.md).
+
+</details>
