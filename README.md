@@ -4,7 +4,7 @@ Starter implementation of **trainable language-guided object localization** on a
 
 ## Current state
 
-Implemented: synthetic data generator, JSONL data loader, frozen CLIP visual/text feature extraction, cross-attention, box regression, L1 + IoU loss, evaluation (Acc@IoU≥0.5 and mean IoU), and visualizations. **No official real-data metrics, trained adapters, or SAM masks yet.** Synthetic data is solely for smoke testing.
+Implemented: three-level synthetic data generator (easy/mixed/hard), JSONL data loader, frozen CLIP visual/text feature extraction, cross-attention, box regression, L1 + IoU loss, evaluation (Acc@IoU≥0.5 and mean IoU), and visualizations. **No official real-data metrics, trained adapters, or SAM masks yet.** Synthetic data is solely for smoke testing. The generator now supports easy, mixed and hard scenes with randomized object positions, shapes, sizes, colors and controlled occlusion. Bounding boxes for occluded targets are full-object (amodal) boxes.
 
 ## Directory structure
 
@@ -15,7 +15,7 @@ grounding/
   data.py            image / text / xyxy JSONL data loader
   engine.py          losses and evaluation
 scripts/
-  make_toy_data.py   toy synthetic rectangle dataset
+  make_toy_data.py   easy/mixed/hard shapes, randomized layouts and occlusion
   train.py           head training
   evaluate.py        validation
   visualize.py       prediction with drawn rectangle
@@ -50,6 +50,29 @@ python -m scripts.visualize --image data/toy/val_0000.png --text "the red rectan
 ```
 
 Output: `checkpoints/grounder.pt` (only trained head; frozen CLIP weights reload from Hugging Face), validation Acc@0.5 and mean IoU, and `results/grounding_preview.png`.
+
+### Difficulty-controlled synthetic experiments
+
+The original dataset placed the same colored rectangles at nearly fixed horizontal positions, encouraging a *position shortcut*. The updated generator uses a disjoint random stream for validation and three modes:
+
+```powershell
+python -m scripts.make_toy_data --mode easy  --out data/easy  --train 300 --val 60
+python -m scripts.make_toy_data --mode mixed --out data/mixed --train 500 --val 100
+python -m scripts.make_toy_data --mode hard  --out data/hard  --train 500 --val 100
+```
+
+- `easy`: randomizes left-to-right color order, retaining three rectangles as a control.
+- `mixed`: varied colors, circle/triangle/rectangle shapes, scale, position; little overlap.
+- `hard`: five to seven objects, same-color/same-shape distractors and partial overlap; target selected to preserve at least ~68% visible area.
+- Labels remain `image`, `expression`, `bbox_xyxy` and include optional `objects`, `difficulty`, `target_visible_fraction`, `bbox_type=amodal`.
+
+For independent comparisons, **train and evaluate on separate mode-specific files**. For example:
+
+```powershell
+python -m scripts.train --train data/mixed/train.jsonl --val data/mixed/val.jsonl --image-root data/mixed --epochs 5 --batch-size 4 --out checkpoints/mixed.pt
+```
+
+Because images use a synthetic renderer, split samples remain procedurally similar: these numbers do not measure generalization to real referring expressions. Hard-mode occluded boxes are **amodal**. The default synthetic benchmark should not be confused with official RefCOCO annotation protocols.
 
 ## Phase 1: actual referring-expression data
 
