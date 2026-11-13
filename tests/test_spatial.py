@@ -30,3 +30,24 @@ def test_spatial_loss_gradients():
     boxes=torch.tensor([[.2,.3,.6,.7]],requires_grad=True)
     total,_=grounding_loss(boxes,target,{"spatial_logits":logits})
     assert torch.isfinite(total)
+
+def test_fourteen_by_fourteen_grid():
+    boxes=torch.tensor([[0.0,0.0,1.0,1.0],[0.0,0.0,1/14,1/14]])
+    target=patch_target(boxes,grid=14)
+    assert target.shape==(2,196)
+    assert torch.allclose(target.sum(-1),torch.ones(2))
+    assert torch.allclose(target[1,0],torch.tensor(1.))
+    center=attention_centers(target,grid=14)
+    assert torch.allclose(center[0],torch.tensor([.5,.5]),atol=1e-5)
+    logits=torch.zeros(2,196,requires_grad=True)
+    loss=spatial_cross_entropy(logits,boxes,grid=14)
+    loss.backward()
+    assert torch.isfinite(loss) and logits.grad.abs().sum()>0
+
+def test_grounding_loss_infers_spatial_grid():
+    logits=torch.zeros(1,196,requires_grad=True)
+    pred=torch.tensor([[.2,.2,.6,.6]],requires_grad=True)
+    target=torch.tensor([[.1,.1,.5,.5]])
+    loss,_=grounding_loss(pred,target,{"spatial_logits":logits},spatial_weight=.05)
+    loss.backward()
+    assert torch.isfinite(loss) and logits.grad.abs().sum()>0
