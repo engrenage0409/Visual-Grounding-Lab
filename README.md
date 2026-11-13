@@ -1,1 +1,97 @@
-# Visual-Grounding-Lab
+# Visual Grounding Lab — Referring Expression → Bounding Box
+
+Starter implementation of **trainable language-guided object localization** on an 8GB-class GPU, e.g. RTX 5060. Uses **frozen CLIP ViT-B/32 image patch and text representations**, plus trainable projections, cross-attention and one-box regression head. This is a learning baseline, **not** a trained RefCOCO benchmark or Grounding DINO reproduction.
+
+## Current state
+
+Implemented: synthetic data generator, JSONL data loader, frozen CLIP visual/text feature extraction, cross-attention, box regression, L1 + IoU loss, evaluation (Acc@IoU≥0.5 and mean IoU), and visualizations. **No official real-data metrics, trained adapters, or SAM masks yet.** Synthetic data is solely for smoke testing.
+
+## Directory structure
+
+```text
+grounding/
+  model.py           CLIP + cross-attention + box head
+  geometry.py        box format transformations and aligned IoU
+  data.py            image / text / xyxy JSONL data loader
+  engine.py          losses and evaluation
+scripts/
+  make_toy_data.py   toy synthetic rectangle dataset
+  train.py           head training
+  evaluate.py        validation
+  visualize.py       prediction with drawn rectangle
+tests/
+  test_geometry.py   geometry unit tests
+docs/
+  reading-list.md    links to papers, datasets and comparison baselines
+```
+
+## Installation
+
+From the repository root, use an existing CUDA-enabled PyTorch environment (the one used for CILP is a reasonable starting point). If needed, install PyTorch from the [official selector](https://pytorch.org/get-started/locally/).
+
+```powershell
+git clone https://github.com/engrenage0409/Visual-Grounding-Lab.git
+cd Visual-Grounding-Lab
+python -m pip install -r requirements.txt
+python -m pytest -q
+```
+
+Hugging Face downloads the public CLIP backbone on first run.
+
+## Phase 0: sanity check (synthetic rectangles only)
+
+Run every command from the repository root:
+
+```powershell
+python -m scripts.make_toy_data
+python -m scripts.train --epochs 5 --batch-size 4
+python -m scripts.evaluate
+python -m scripts.visualize --image data/toy/val_0000.png --text "the red rectangle"
+```
+
+Output: `checkpoints/grounder.pt` (only trained head; frozen CLIP weights reload from Hugging Face), validation Acc@0.5 and mean IoU, and `results/grounding_preview.png`.
+
+## Phase 1: actual referring-expression data
+
+Obtain RefCOCO-style images and annotations legally, and split examples by the appropriate dataset protocol. Convert to per-line JSON records:
+
+```json
+{"image":"000000123.jpg","expression":"the person in a blue shirt","bbox_xyxy":[13,24,145,205]}
+```
+
+The box must be **xyxy in original image pixels**. The loader divides by original width and height; `image` is relative to `--image-root` unless absolute.
+
+```powershell
+python -m scripts.train --train data/refcoco/train.jsonl --val data/refcoco/val.jsonl --image-root data/refcoco/images --epochs 10 --batch-size 4
+python -m scripts.evaluate --data data/refcoco/val.jsonl --image-root data/refcoco/images
+```
+
+No licensed RefCOCO data or automatic downloader is bundled. Follow original COCO and refer-expression dataset licensing and train/validation split definitions.
+
+## Architecture
+
+```text
+Image ── frozen CLIP ViT ── patch embeddings ── projection ─┐
+                                                            ├─ cross-attention ─ box MLP ─ normalized xyxy
+Text  ── frozen CLIP text encoder ─ pooled vector ─ project ┘
+```
+
+Vision and text backbone parameters stay frozen. The head emits **one box per expression**; it does not perform region proposal generation, multi-box open-set detection, mask prediction, or multi-scale grounding. CLIP ViT-B/32 has coarse patch spatial resolution, limiting small-object performance.
+
+## Metrics and limits
+
+- **Acc@0.5:** proportion of predicted boxes with IoU ≥ 0.5 against ground truth.
+- **Mean IoU:** average overlap across examples.
+- Keep test data untouched while selecting epochs and hyperparameters.
+- Default training is a single fixed seed with no measured results in this repository yet; do not report synthetic smoke-test accuracy as a benchmark.
+- Dependencies are not yet fully pinned to an exact reproduction environment.
+
+## Next experiments
+
+1. Official RefCOCO/RefCOCOg data adaptation and correct evaluation splits.
+2. Error analysis by object size and referring-expression type.
+3. Grounding DINO pretrained baseline.
+4. Industrial drawing grounding with OCR and geometric evidence.
+5. Optional SAM box-prompt segmentation.
+
+See [papers and resources](docs/reading-list.md).

@@ -1,0 +1,6 @@
+torch>=2.3
+torchvision>=0.18
+transformers>=4.44
+pillow>=10
+tqdm>=4.66
+pytest>=8
