@@ -1,3 +1,4 @@
+import math
 import argparse,json
 from pathlib import Path
 import torch
@@ -10,7 +11,7 @@ def main():
     p.add_argument("--text",required=True)
     p.add_argument("--checkpoint",default="checkpoints/grounder.pt")
     p.add_argument("--output",default="results/grounding_preview.png")
-    p.add_argument("--heatmap",default=None,help="Optional spatial 7x7 heatmap overlay PNG")
+    p.add_argument("--heatmap",default=None,help="Optional spatial heatmap overlay PNG (auto-detects patch grid)")
     a=p.parse_args()
     device="cuda" if torch.cuda.is_available() else "cpu"
     model,ck=load_grounder(a.checkpoint,device)
@@ -29,7 +30,11 @@ def main():
             "bbox_xyxy_normalized":box,"bbox_xyxy_pixels":xyxy}
     if a.heatmap and "spatial_probs" in aux:
         import numpy as np
-        prob=aux["spatial_probs"][0].reshape(7,7).cpu().numpy()
+        patch_probs=aux["spatial_probs"][0]
+        grid=math.isqrt(patch_probs.numel())
+        if grid*grid!=patch_probs.numel():
+            raise ValueError(f"Spatial heatmap requires a square grid, got {patch_probs.numel()} patches")
+        prob=patch_probs.reshape(grid,grid).cpu().numpy()
         prob=(prob-prob.min())/(np.ptp(prob)+1e-9)
         heat=Image.fromarray(np.uint8(prob*255),"L").resize(im.size,Image.Resampling.BILINEAR)
         red=Image.new("RGB",im.size,(255,30,30))
