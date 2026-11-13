@@ -4,17 +4,19 @@ import torch.nn.functional as F
 from transformers import CLIPModel,CLIPProcessor
 from .geometry import cxcywh_to_xyxy
 from .spatial import attention_centers,center_size_to_valid_xyxy
+from .region import region_candidates
 
 class CLIPGrounder(nn.Module):
     """Frozen CLIP patch/text representations + trainable box head.
 
     arch=baseline retains the original single text-query cross-attention model.
-    arch=spatial adds text-conditioned per-patch scores, explicit patch-position
-    encodings, supervised heatmap, and box-size prediction conditioned on features.
+    arch=spatial adds text-conditioned per-patch scores and spatial expectation.
+    arch=region (V5) scores separate patch-anchored candidate boxes, avoiding
+    averaging the centers of competing objects.
     """
     def __init__(self,model_name="openai/clip-vit-base-patch32",hidden=256,arch="baseline"):
         super().__init__()
-        if arch not in ("baseline","spatial"): raise ValueError("Unknown architecture")
+        if arch not in ("baseline","spatial","region"): raise ValueError("Unknown architecture")
         self.arch=arch
         self.model_name=model_name
         self.processor=CLIPProcessor.from_pretrained(model_name)
@@ -42,8 +44,12 @@ class CLIPGrounder(nn.Module):
             self.patch_fusion=nn.Sequential(nn.Linear(hidden*2,hidden),nn.GELU(),
                                             nn.LayerNorm(hidden))
             self.score_head=nn.Linear(hidden,1)
-            self.size_head=nn.Sequential(nn.Linear(hidden*2,hidden),nn.GELU(),
-                                         nn.Linear(hidden,2))
+            if arch=="spatial":
+                self.size_head=nn.Sequential(nn.Linear(hidden*2,hidden),nn.GELU(),
+                                             nn.Linear(hidden,2))
+            else:
+                self.region_offset_head=nn.Linear(hidden,2)
+                self.region_size_head=nn.Linear(hidden,2)
     def train(self,mode=True):
         super().train(mode)
         self.clip.eval()
@@ -74,6 +80,17 @@ class CLIPGrounder(nn.Module):
             [visual,query.unsqueeze(1).expand_as(visual)],dim=-1))
         logits=self.score_head(conditioned).squeeze(-1)
         probs=F.softmax(logits,dim=-1)
+        if self.arch=="region":
+            logits,candidates=region_candidates(conditioned,self.score_head,
+                self.region_offset_head,self.region_size_head,self.grid)
+            topk=torch.topk(logits,k=min(5,self.num_patches),dim=-1)
+            winner=topk.indices[:,0]
+            batch_idx=torch.arange(logits.shape[0],device=logits.device)
+            boxes=candidates[batch_idx,winner]
+            aux={"region_logits":logits,"region_boxes":candidates,
+                 "spatial_probs":F.softmax(logits,dim=-1),
+                 "topk_indices":topk.indices,"topk_scores":topk.values}
+            return (boxes,aux) if return_aux else boxes
         center=attention_centers(probs,grid=self.grid)
         attended=(probs.unsqueeze(-1)*visual).sum(1)
         size=torch.sigmoid(self.size_head(torch.cat([attended,query],dim=-1)))
